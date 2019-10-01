@@ -236,6 +236,14 @@
 	"Automaton. This iterator can be manipulated through its\n" \
 	"set() method."
 
+#define automaton_search_iter_all_doc \
+	"all(array)\n" \
+	"\n" \
+	"Collect all remaining match counts in a buffer.\n" \
+	"\n" \
+	"Sets array[k] = count(v) for all k, v pairs in the\n" \
+	"automaton."
+
 #define automaton_search_iter_set_doc \
 	"set(string, reset=False)\n" \
 	"\n" \

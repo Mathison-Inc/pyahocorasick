@@ -10,6 +10,7 @@
 
 #include "AutomatonSearchIter.h"
 #include <wctype.h>
+typedef uint64_t opt_int;
 
 static PyTypeObject automaton_search_iter_type;
 
@@ -197,6 +198,31 @@ automaton_build_output(PyObject* self, PyObject** result) {
 }
 
 
+static int
+automaton_build_output_optimized(PyObject* self, opt_int* results, int results_size) {
+    TrieNode* node;
+    int value;
+
+    while (iter->output && !iter->output->eow) {
+        iter->output = iter->output->fail;
+    }
+
+    if (iter->output) {
+        node = iter->output;
+        iter->output = iter->output->fail;
+        value = node->output.integer;
+        if ((0 <= value) && (value < results_size)) {
+            results[value]++;
+            return OutputValue;
+        } else {
+            PyErr_SetString(PyExc_ValueError, "results buffer is too small");
+            return OutputError;
+        }
+    } else {
+        return OutputNone;
+    }
+}
+
 
 #ifdef VARIABLE_LEN_CHARCODES
 static bool
@@ -300,6 +326,69 @@ return_output:
 }
 
 
+static int
+automaton_search_iter_next_optimized(PyObject* self, opt_int* results, int results_size) {
+    if (iter->version != iter->automaton->version) {
+        PyErr_SetString(PyExc_ValueError, "underlaying automaton has changed, iterator is not valid anymore");
+        return 0;
+    }
+
+    if (iter->automaton->store != STORE_INTS) {
+        PyErr_SetString(PyExc_ValueError, "underlaying automaton is not an integer key store");
+        return 0;
+    }
+
+return_output:
+    switch (automaton_build_output_optimized(self, results, results_size)) {
+        case OutputValue:
+            return 1;
+
+        case OutputNone:
+            break;
+
+        case OutputError:
+            return 0;
+    }
+
+#ifdef VARIABLE_LEN_CHARCODES
+    if (!automaton_search_iter_advance_index(self)) {
+        return 0;
+    }
+#else
+    iter->index += 1;
+    if (iter->ignore_white_space) {
+        while (iswspace(iter->input.word[iter->index]) && (iter->index < iter->end)) {
+            iter->index += 1;
+        }
+    }
+#endif
+    while (iter->index < iter->end) {
+        // process single char
+        iter->state = ahocorasick_next(
+                        iter->state,
+                        iter->automaton->root,
+                        iter->input.word[iter->index]
+                        );
+
+        ASSERT(iter->state);
+
+        iter->output = iter->state;
+        goto return_output;
+
+#ifdef VARIABLE_LEN_CHARCODES
+        if (!automaton_search_iter_advance_index(self)) {
+            return 0;
+        }
+#else
+        iter->index += 1;
+#endif
+
+    } // while
+
+    return 0;    // StopIteration
+}
+
+
 static PyObject*
 automaton_search_iter_set(PyObject* self, PyObject* args) {
     PyObject* object;
@@ -367,12 +456,36 @@ automaton_search_iter_set(PyObject* self, PyObject* args) {
 }
 
 
+static PyObject*
+automaton_search_iter_all(PyObject* self, PyObject* args) {
+    Py_buffer buf;
+
+    if (!PyArg_ParseTuple(args, "w*", &buf)) {
+        return NULL;
+    }
+
+    if (buf.itemsize != sizeof(opt_int)) {
+        PyErr_SetString(PyExc_ValueError, "invalid buffer type (expected int64)");
+        PyBuffer_Release(&buf);
+        return NULL;
+    }
+
+    long out = 0;
+    while (automaton_search_iter_next_optimized(self, (opt_int*) buf.buf, buf.len / buf.itemsize)) {
+        out++;
+    }
+
+    PyBuffer_Release(&buf);
+    return PyLong_FromLong(out);
+}
+
 #undef iter
 
 #define method(name, kind) {#name, automaton_search_iter_##name, kind, automaton_search_iter_##name##_doc}
 
 static
 PyMethodDef automaton_search_iter_methods[] = {
+    method(all, METH_VARARGS),
     method(set, METH_VARARGS),
 
     {NULL, NULL, 0, NULL}
